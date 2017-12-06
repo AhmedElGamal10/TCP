@@ -3,19 +3,36 @@ package main.client;
 import main.util.AckPacket;
 import main.util.DataPacket;
 
-import javax.xml.crypto.Data;
 import java.io.*;
 
 import java.net.*;
+
 import java.util.concurrent.*;
 
 public class Client {
 
-    public static final int MAX_SIZE = 2048;
+    private int expectedSeqNum;
+    private InetAddress IPAddress;
+    private DatagramSocket clientSocket;
+    private static final int MAX_SIZE = 2048;
 
-    public static void main(String[] args) {
-        DatagramSocket clientSocket = null;
+    private void stopAndWait(FileOutputStream fileStream, DatagramPacket receivePacket) throws IOException {
+        DataPacket packet = DataPacket.deserialize(receivePacket.getData(), receivePacket.getLength());
 
+        if (packet.getSeqNum() == expectedSeqNum) {
+            expectedSeqNum += packet.getLength();
+            fileStream.write(packet.getData(), 0, packet.getLength());
+        }
+
+        byte[] sendData = AckPacket.serialize(new AckPacket(expectedSeqNum));
+        clientSocket.send(new DatagramPacket(sendData, sendData.length, IPAddress, 9876));
+    }
+
+    private void selectiveRepeat(FileOutputStream fileStream, DatagramPacket receivePacket) {
+
+    }
+
+    private void init() {
         try {
             clientSocket = new DatagramSocket(5554);
         } catch (SocketException e) {
@@ -23,7 +40,6 @@ public class Client {
             return;
         }
 
-        InetAddress IPAddress = null;
         try {
             IPAddress = InetAddress.getByName("localhost");
         } catch (UnknownHostException e) {
@@ -34,18 +50,19 @@ public class Client {
 
         FileOutputStream fileStream = null;
         String sentence = "GET dummy.pdf";
-        byte[] sendData = sentence.getBytes();
         byte[] receiveData = new byte[MAX_SIZE];
         ExecutorService executor = Executors.newSingleThreadExecutor();
 
         try {
-            clientSocket.send(new DatagramPacket(sendData, sendData.length, IPAddress, 9876));
+            clientSocket.send(
+                    new DatagramPacket(
+                            sentence.getBytes(), sentence.getBytes().length, IPAddress, 9876));
 
             System.out.println("Sent get request!");
 
-            File file = new File("tempDummy.pdf");
+            expectedSeqNum = 0;
             DatagramSocket finalClientSocket = clientSocket;
-            fileStream = new FileOutputStream(file);
+            fileStream = new FileOutputStream(new File("tempDummy.pdf"));
 
             while (true) {
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
@@ -55,13 +72,15 @@ public class Client {
                         finalClientSocket.receive(receivePacket);
                     } catch (IOException e) { }
                 });
-                future.get(1, TimeUnit.SECONDS);
+                future.get(10, TimeUnit.SECONDS);
 
-                DataPacket packet = DataPacket.deserialize(receivePacket.getData(), receivePacket.getLength());
-                fileStream.write(packet.getData(), 0, packet.getLength());
 
-                sendData = AckPacket.serialize(new AckPacket(packet.getSeqNum() + packet.getLength()));
-                clientSocket.send(new DatagramPacket(sendData, sendData.length, IPAddress, 9876));
+                //TODO: parallelize.
+                if (true) { //TODO: change to case switch.
+                    stopAndWait(fileStream, receivePacket);
+                } else {
+                    selectiveRepeat(fileStream, receivePacket);
+                }
             }
 
         } catch (IOException | InterruptedException | ExecutionException e) {
@@ -77,6 +96,10 @@ public class Client {
         }
         clientSocket.close();
         executor.shutdown();
+    }
+
+    public static void main(String[] args) {
+        (new Client()).init();
     }
 
 }

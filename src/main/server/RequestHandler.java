@@ -1,5 +1,6 @@
 package main.server;
 
+import main.util.AckPacket;
 import main.util.DataPacket;
 
 import java.io.File;
@@ -13,9 +14,9 @@ import java.net.SocketException;
 
 import java.util.Set;
 import java.util.Collections;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.TimeUnit;
 
 public class RequestHandler {
 
@@ -25,9 +26,9 @@ public class RequestHandler {
     private InetAddress ip;
     private CountDownLatch latch;
     private Set<String> requests;
-    private DatagramSocket clientSocket;
+    private DatagramSocket socket;
 
-    public static final int MAX_SIZE = 1024;
+    private static final int MAX_SIZE = 1024;
 
     RequestHandler(InetAddress ip, int port, boolean single) {
         this.ip = ip;
@@ -38,7 +39,7 @@ public class RequestHandler {
         this.requests = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
         try {
-            this.clientSocket = new DatagramSocket();
+            this.socket = new DatagramSocket();
         } catch (SocketException e) {
             System.err.println("Failure: " + e.getMessage());
             return;
@@ -48,21 +49,30 @@ public class RequestHandler {
     }
 
     private void stopAndWait(FileInputStream fileStream) throws InterruptedException, IOException {
-        boolean run;
+        boolean receivedPacket;
         byte[] content = new byte[MAX_SIZE];
         int count = 0, length = 0, seqNum = 0;
 
         while ((length = fileStream.read(content)) != -1) {
-            run = false;
+            receivedPacket = false;
             latch = new CountDownLatch(1);
             byte[] serializedData = DataPacket.serialize(new DataPacket(seqNum, content, length));
 
-            while (!run) {
+            while (!receivedPacket) {
                 send(serializedData, serializedData.length);
-                run = latch.await(100, TimeUnit.MILLISECONDS);
-            }
+                receivedPacket = latch.await(100, TimeUnit.MILLISECONDS);
 
-            requests.clear();
+                if (receivedPacket) {
+                    for (String request : requests) {
+                        requests.remove(request);
+
+                        AckPacket ack = AckPacket.deserialize(request.getBytes());
+                        if (ack.getAckNum() != seqNum + length) {
+                            receivedPacket = false;
+                        }
+                    }
+                }
+            }
 
             count++;
             seqNum += length;
@@ -84,11 +94,10 @@ public class RequestHandler {
         }
 
         for (String request : requests) {
-            requests.remove(requests);
+            requests.remove(request);
             System.out.println(request);
 
             File file = new File(request.split(" ")[1]);
-            System.out.println("File size = " + file.length());
 
             try {
                 FileInputStream fileStream = new FileInputStream(file);
@@ -100,7 +109,6 @@ public class RequestHandler {
                 }
 
                 done = true;
-                requests.clear();
                 fileStream.close();
             } catch (IOException | InterruptedException e) {
                 System.err.println("Failure: " + e.getMessage());
@@ -113,7 +121,7 @@ public class RequestHandler {
     private void send(byte[] data, int length) {
         DatagramPacket sendPacket = new DatagramPacket(data, length, ip, port);
         try {
-            clientSocket.send(sendPacket);
+            socket.send(sendPacket);
         } catch (IOException e) {
             System.err.println("Failure: " + e.getMessage());
             return;

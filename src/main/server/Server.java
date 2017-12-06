@@ -1,7 +1,5 @@
 package main.server;
 
-import com.sun.tools.doclets.formats.html.SourceToHTMLConverter;
-
 import java.io.IOException;
 
 import java.net.InetAddress;
@@ -16,8 +14,8 @@ import java.util.concurrent.ExecutorService;
 
 public class Server {
 
-    public static final int MAX_SIZE = 2048;
-    public static final int THREADS_NUMBER = 128;
+    private static final int MAX_SIZE = 2048;
+    private static final int THREADS_NUMBER = 128;
 
     public static void main(String[] args) {
         DatagramSocket serverSocket = null;
@@ -30,7 +28,6 @@ public class Server {
         }
 
         DatagramPacket receivePacket;
-        byte[] sendData = new byte[MAX_SIZE];
         byte[] receiveData = new byte[MAX_SIZE];
         Map<String, RequestHandler> handlers = new HashMap<>();
         ExecutorService executor = Executors.newFixedThreadPool(THREADS_NUMBER);
@@ -45,6 +42,7 @@ public class Server {
                 continue;
             }
 
+            //TODO: parallelize.
             int port = receivePacket.getPort();
             InetAddress IPAddress = receivePacket.getAddress();
 
@@ -54,7 +52,7 @@ public class Server {
 
             handlers.computeIfAbsent(
                     key, (k) -> {
-                        RequestHandler handler = new RequestHandler(IPAddress, port, true); //TODO: set Boolean.
+                        RequestHandler handler = new RequestHandler(IPAddress, port, false); //TODO: set Boolean.
                         executor.execute(() -> handler.handleRequest());
                         return handler;
                     });
