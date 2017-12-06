@@ -1,5 +1,7 @@
 package main.server;
 
+import main.util.DataPacket;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.FileInputStream;
@@ -13,10 +15,13 @@ import java.util.Set;
 import java.util.Collections;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class RequestHandler {
 
     private int port;
+    private boolean done;
+    private boolean single;
     private InetAddress ip;
     private CountDownLatch latch;
     private Set<String> requests;
@@ -24,9 +29,11 @@ public class RequestHandler {
 
     public static final int MAX_SIZE = 1024;
 
-    RequestHandler(InetAddress ip, int port) {
+    RequestHandler(InetAddress ip, int port, boolean single) {
         this.ip = ip;
         this.port = port;
+        this.done = false;
+        this.single = single;
         this.latch = new CountDownLatch(1);
         this.requests = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
@@ -40,42 +47,66 @@ public class RequestHandler {
         System.out.println("Connection to: " + ip.getHostAddress() + ":" + port + " is initialized.");
     }
 
-    public void handleRequest() {
-        while (true) {
-            try {
-                latch.await();
-            } catch (InterruptedException e) {
-                System.err.println("Failure: " + e.getMessage());
-                return;
-            }
+    private void stopAndWait(FileInputStream fileStream) throws InterruptedException, IOException {
+        boolean run;
+        byte[] content = new byte[MAX_SIZE];
+        int count = 0, length = 0, seqNum = 0;
 
+        while ((length = fileStream.read(content)) != -1) {
+            run = false;
             latch = new CountDownLatch(1);
+            byte[] serializedData = DataPacket.serialize(new DataPacket(seqNum, content, length));
 
-            for (String request : requests) {
-                requests.remove(request);
-                System.out.println(request);
-                File file = new File(request.split(" ")[1]);
-
-                try {
-                    byte[] content = new byte[MAX_SIZE];
-                    FileInputStream fileStream = new FileInputStream(file);
-                    System.out.println("File size = " + file.length());
-
-                    int count = 0, length = 0;
-                    while ((length = fileStream.read(content)) != -1) {
-                        send(content, length);
-                        Thread.sleep(25);
-                        count++;
-                    }
-
-                    System.out.println("Count = " + count);
-                } catch (IOException e) {
-                    System.err.println("Failure: " + e.getMessage());
-                    continue;
-                } catch (InterruptedException e) {
-                    e.printStackTrace();
-                }
+            while (!run) {
+                send(serializedData, serializedData.length);
+                run = latch.await(100, TimeUnit.MILLISECONDS);
             }
+
+            requests.clear();
+
+            count++;
+            seqNum += length;
+        }
+
+        System.out.println("Sent chunks count = " + count);
+    }
+
+    private void selectiveRepeat(FileInputStream fileStream) {
+
+    }
+
+    public void handleRequest() {
+        try {
+            latch.await();
+        } catch (InterruptedException e) {
+            System.err.println("Failure: " + e.getMessage());
+            return;
+        }
+
+        for (String request : requests) {
+            requests.remove(requests);
+            System.out.println(request);
+
+            File file = new File(request.split(" ")[1]);
+            System.out.println("File size = " + file.length());
+
+            try {
+                FileInputStream fileStream = new FileInputStream(file);
+
+                if (single) {
+                    stopAndWait(fileStream);
+                } else {
+                    selectiveRepeat(fileStream);
+                }
+
+                done = true;
+                requests.clear();
+                fileStream.close();
+            } catch (IOException | InterruptedException e) {
+                System.err.println("Failure: " + e.getMessage());
+            }
+
+            return;
         }
     }
 
@@ -89,8 +120,14 @@ public class RequestHandler {
         }
     }
 
+    public boolean isDone() {
+        return done;
+    }
+
     public void addRequest(byte[] data, int size) {
-        requests.add(new String(data).substring(0, size));
-        latch.countDown();
+        if (!done) {
+            requests.add(new String(data).substring(0, size));
+            latch.countDown();
+        }
     }
 }

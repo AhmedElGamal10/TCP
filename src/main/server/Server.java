@@ -1,5 +1,7 @@
 package main.server;
 
+import com.sun.tools.doclets.formats.html.SourceToHTMLConverter;
+
 import java.io.IOException;
 
 import java.net.InetAddress;
@@ -14,7 +16,7 @@ import java.util.concurrent.ExecutorService;
 
 public class Server {
 
-    public static final int MAX_SIZE = 1024;
+    public static final int MAX_SIZE = 2048;
     public static final int THREADS_NUMBER = 128;
 
     public static void main(String[] args) {
@@ -48,15 +50,12 @@ public class Server {
 
             String key = IPAddress.getHostAddress() + ":" + port;
 
+            handlers.computeIfPresent(key, (k, v) -> v.isDone() ? null : v);
+
             handlers.computeIfAbsent(
                     key, (k) -> {
-                        RequestHandler handler = new RequestHandler(IPAddress, port);
-                        executor.execute(new Runnable() {
-                            @Override
-                            public void run() {
-                                handler.handleRequest();
-                            }
-                        });
+                        RequestHandler handler = new RequestHandler(IPAddress, port, true); //TODO: set Boolean.
+                        executor.execute(() -> handler.handleRequest());
                         return handler;
                     });
 
