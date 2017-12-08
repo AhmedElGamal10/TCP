@@ -3,18 +3,24 @@ package main.client;
 import main.util.AckPacket;
 import main.util.DataPacket;
 
+import javax.xml.crypto.Data;
 import java.io.*;
 
 import java.net.*;
 
+import java.util.HashMap;
+import java.util.Map;
 import java.util.concurrent.*;
 
 public class Client {
 
     private int expectedSeqNum;
     private InetAddress IPAddress;
+    private ExecutorService executor;
     private DatagramSocket clientSocket;
     private static final int MAX_SIZE = 2048;
+    private static final int THREADS_NUMBER = 16;
+    private Map<Integer, DataPacket> receivedPackets;
 
     private void stopAndWait(FileOutputStream fileStream, DatagramPacket receivePacket) throws IOException {
         DataPacket packet = DataPacket.deserialize(receivePacket.getData(), receivePacket.getLength());
@@ -28,8 +34,27 @@ public class Client {
         clientSocket.send(new DatagramPacket(sendData, sendData.length, IPAddress, 9876));
     }
 
-    private void selectiveRepeat(FileOutputStream fileStream, DatagramPacket receivePacket) {
+    private synchronized void writePackets(FileOutputStream fileStream) {
+        while (receivedPackets.containsKey(expectedSeqNum)) {
+            DataPacket packet = receivedPackets.remove(expectedSeqNum);
+            expectedSeqNum += packet.getLength();
+            try {
+                fileStream.write(packet.getData(), 0, packet.getLength());
+            } catch (IOException e) {
+                System.err.println("Failure: " + e.getMessage());
+            }
+        }
+    }
 
+    private void selectiveRepeat(FileOutputStream fileStream, DatagramPacket receivePacket) throws IOException {
+        DataPacket packet = DataPacket.deserialize(receivePacket.getData(), receivePacket.getLength());
+
+        receivedPackets.computeIfAbsent(packet.getSeqNum(), (k) -> packet);
+
+        byte[] sendData = AckPacket.serialize(new AckPacket(packet.getSeqNum() + packet.getLength()));
+        clientSocket.send(new DatagramPacket(sendData, sendData.length, IPAddress, 9876));
+
+        executor.submit(() -> writePackets(fileStream));
     }
 
     private void init() {
@@ -49,9 +74,10 @@ public class Client {
         }
 
         FileOutputStream fileStream = null;
-        String sentence = "GET dummy.pdf";
+        String sentence = "GET weka.jar";
         byte[] receiveData = new byte[MAX_SIZE];
-        ExecutorService executor = Executors.newSingleThreadExecutor();
+        receivedPackets = new ConcurrentHashMap<>();
+        executor = Executors.newFixedThreadPool(THREADS_NUMBER);
 
         try {
             clientSocket.send(
@@ -62,7 +88,7 @@ public class Client {
 
             expectedSeqNum = 0;
             DatagramSocket finalClientSocket = clientSocket;
-            fileStream = new FileOutputStream(new File("tempDummy.pdf"));
+            fileStream = new FileOutputStream(new File("tempWeka.jar"));
 
             while (true) {
                 DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
@@ -74,9 +100,8 @@ public class Client {
                 });
                 future.get(10, TimeUnit.SECONDS);
 
-
                 //TODO: parallelize.
-                if (true) { //TODO: change to case switch.
+                if (false) { //TODO: change to case switch.
                     stopAndWait(fileStream, receivePacket);
                 } else {
                     selectiveRepeat(fileStream, receivePacket);

@@ -12,11 +12,8 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.SocketException;
 
-import java.util.Set;
-import java.util.Collections;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.CountDownLatch;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.*;
+import java.util.concurrent.*;
 
 public class RequestHandler {
 
@@ -24,18 +21,21 @@ public class RequestHandler {
     private boolean done;
     private boolean single;
     private InetAddress ip;
-    private CountDownLatch latch;
     private Set<String> requests;
     private DatagramSocket socket;
+    private CountDownLatch received;
+    private Map<Integer, CountDownLatch> sentPackets;
 
     private static final int MAX_SIZE = 1024;
+    private static final int NUM_PACKETS = 8;
 
     RequestHandler(InetAddress ip, int port, boolean single) {
         this.ip = ip;
         this.port = port;
         this.done = false;
         this.single = single;
-        this.latch = new CountDownLatch(1);
+        this.received = new CountDownLatch(1);
+        this.sentPackets = new ConcurrentHashMap<>();
         this.requests = Collections.newSetFromMap(new ConcurrentHashMap<String, Boolean>());
 
         try {
@@ -55,12 +55,12 @@ public class RequestHandler {
 
         while ((length = fileStream.read(content)) != -1) {
             receivedPacket = false;
-            latch = new CountDownLatch(1);
+            received = new CountDownLatch(1);
             byte[] serializedData = DataPacket.serialize(new DataPacket(seqNum, content, length));
 
             while (!receivedPacket) {
                 send(serializedData, serializedData.length);
-                receivedPacket = latch.await(100, TimeUnit.MILLISECONDS);
+                receivedPacket = received.await(100, TimeUnit.MILLISECONDS);
 
                 if (receivedPacket) {
                     for (String request : requests) {
@@ -81,13 +81,69 @@ public class RequestHandler {
         System.out.println("Sent chunks count = " + count);
     }
 
-    private void selectiveRepeat(FileInputStream fileStream) {
+    private void sendPacket(byte[] serializedData, int ackNum) {
+        boolean receivedPacket = false;
 
+        while (!receivedPacket) {
+            send(serializedData, serializedData.length);
+            CountDownLatch acked = new CountDownLatch(1);
+            sentPackets.put(ackNum, acked);
+
+            try {
+                receivedPacket = acked.await(100, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                System.err.println("Failure: " + e.getMessage());
+            }
+        }
+    }
+    
+    private void selectiveRepeat(FileInputStream fileStream) throws InterruptedException, IOException {
+        byte[] content = new byte[MAX_SIZE];
+        int count = 0, length = 0, seqNum = 0;
+        Queue<Integer> waitedAcks = new LinkedList<>();
+
+        ExecutorService executor = Executors.newFixedThreadPool(NUM_PACKETS + 1);
+
+        executor.submit(() -> {
+            while (true) {
+                received.await(); // TODO: شيل أمها
+
+                for (String request : requests) {
+                    requests.remove(request);
+
+                    AckPacket ack = AckPacket.deserialize(request.getBytes());
+                    sentPackets.get(ack.getAckNum()).countDown();
+                }
+
+                received = new CountDownLatch(1);
+            }
+        });
+
+        while ((length = fileStream.read(content)) != -1) {
+            byte[] serializedData = DataPacket.serialize(new DataPacket(seqNum, content, length));
+
+            count++;
+            seqNum += length;
+            final int ackNum = seqNum;
+            waitedAcks.add(ackNum);
+            executor.submit(() -> sendPacket(serializedData, ackNum));
+
+            while (!sentPackets.containsKey(waitedAcks.peek()) && sentPackets.size() == NUM_PACKETS) {
+                received.await(1, TimeUnit.SECONDS);
+            }
+
+            while (!waitedAcks.isEmpty() && sentPackets.containsKey(waitedAcks.peek())) {
+                sentPackets.remove(waitedAcks.poll());
+            }
+        }
+
+        System.out.println("Sent chunks count = " + count);
+        executor.shutdown();
     }
 
     public void handleRequest() {
         try {
-            latch.await();
+            received.await();
         } catch (InterruptedException e) {
             System.err.println("Failure: " + e.getMessage());
             return;
@@ -135,7 +191,7 @@ public class RequestHandler {
     public void addRequest(byte[] data, int size) {
         if (!done) {
             requests.add(new String(data).substring(0, size));
-            latch.countDown();
+            received.countDown();
         }
     }
 }

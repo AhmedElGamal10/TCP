@@ -52,7 +52,7 @@ public class Server {
 
             handlers.computeIfAbsent(
                     key, (k) -> {
-                        RequestHandler handler = new RequestHandler(IPAddress, port, false); //TODO: set Boolean.
+                        RequestHandler handler = new RequestHandler(IPAddress, port, true); //TODO: set Boolean.
                         executor.execute(() -> handler.handleRequest());
                         return handler;
                     });
